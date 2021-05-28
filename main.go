@@ -14,6 +14,8 @@ import (
 )
 
 func main() {
+	// init SSH connection
+
 	var sshPort string
 
 	envSshPort := os.Getenv("SSH_PORT")
@@ -24,7 +26,9 @@ func main() {
 	}
 
 	config := &ssh.ServerConfig{
-		NoClientAuth: true,
+		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			return &ssh.Permissions{Extensions:map[string]string {"username":c.User()} }, nil
+		},
 	}
 
 	// create /tmp if it doesn't exist
@@ -51,6 +55,12 @@ func main() {
 
 	fmt.Println("SSH server running at 0.0.0.0" + sshPort)
 
+	// init game
+
+	users := []string{}
+
+	// player connects
+
 	for {
 		nConn, err := listener.Accept()
 		if err != nil {
@@ -59,7 +69,7 @@ func main() {
 
 		go func() {
 			// ssh handshake must be performed
-			_, chans, reqs, err := ssh.NewServerConn(nConn, config)
+			connection, chans, reqs, err := ssh.NewServerConn(nConn, config)
 			if err != nil {
 				fmt.Println("failed to handshake with new client:", err)
 				return
@@ -68,6 +78,9 @@ func main() {
 			// ssh connections can make "requests" outside of the main tcp pipe
 			// for the connection. receive and discard all of those.
 			go ssh.DiscardRequests(reqs)
+
+			username := connection.Permissions.Extensions["username"]
+			users = append(users, username)
 
 			for newChannel := range chans {
 				if newChannel.ChannelType() != "session" {
@@ -92,24 +105,10 @@ func main() {
 				go func() {
 					defer channel.Close()
 
-					welcome_msg := "Entering the world of Maoxian...\n\n\r"
-
-					fmt.Fprint(channel, welcome_msg)
-
-					//connected := []string{
-					//	"\r..........................................................\n\r",
-					//	"\n\r",
-					//	"    (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧ ~*~ CONNECTED! ~*~ ✧ﾟ･: *ヽ(◕ヮ◕ヽ)\n\r",
-					//	"\n\r",
-					//	"..........................................................\n\r",
-					//	"\n\r",
-					//	"WELCOME TO THE HACK CLUB JOBS TERMINAL. PLEASE TYPE help TO BEGIN.\n\r",
-					//	"\n\r",
-					//}
-
-					//typewriteLines(channel, 25*time.Millisecond, connected)
-
 					term := terminal.NewTerminal(channel, `(ง˙o˙)ว ~> $ `)
+
+					fmt.Fprintln(term, username, "enters the world of Maoxian...\n")
+					log.Println(nConn.RemoteAddr(), username, "connected")
 
 					for {
 						cmds := map[string]func([]string){
@@ -132,6 +131,16 @@ func main() {
 
 								fmt.Fprintln(term, "\npsst! try running 'look' to get started")
 							},
+							"look": func(args []string) {
+								fmt.Fprintln(term, "You are in a non-descript room.\n")
+
+								for _, user := range users {
+									fmt.Fprintln(term, user, "is here.")
+								}
+							},
+							"whoami": func(args []string) {
+								fmt.Fprintln(term, "You are", username)
+							},
 							"exit": func(args []string) {
 								fmt.Fprintln(term, "Leaving the land of Maoxian...\r\n")
 
@@ -144,7 +153,7 @@ func main() {
 							break
 						}
 
-						log.Println(nConn.RemoteAddr(), "ran command:", line)
+						log.Println(nConn.RemoteAddr(), username, "ran command:", line)
 
 						trimmedInput := strings.TrimSpace(line)
 
