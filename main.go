@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"strings"
-	"time"
 	"text/tabwriter"
 
 	"golang.org/x/crypto/ssh"
@@ -27,7 +26,7 @@ type roomType struct {
 	name        string
 	description string
 	connections map[direction]string
-	players      []int
+	players     []int
 }
 
 func (r *roomType) removePlayer(player int) {
@@ -47,18 +46,24 @@ func (w *roomCollection) addRoom(r *roomType) {
 }
 
 type playerCharacter struct {
-	id int
-	username string
+	id            int
+	exists        bool
+	username      string
 	listenChannel chan string
+}
+
+func (p *playerCharacter) remove() {
+	p.exists = false
+	close(p.listenChannel)
 }
 
 var players []playerCharacter
 
-func addPlayer(name string) *playerCharacter {
+func addPlayer(name string) int {
 	channel := make(chan string, 100)
-	player := playerCharacter{len(players), name, channel}
-	players = append(players, player)
-	return &player
+	id := len(players)
+	players = append(players, playerCharacter{id, true, name, channel})
+	return id
 }
 
 func removeFrom(slice []int, item int) []int {
@@ -140,10 +145,10 @@ func main() {
 			go ssh.DiscardRequests(reqs)
 
 			username := connection.Permissions.Extensions["username"]
-			player := addPlayer(username)
+			player_id := addPlayer(username)
 
 			here := world.rooms["cabin"]
-			here.players = append(here.players, player.id)
+			here.players = append(here.players, player_id)
 
 			for newChannel := range chans {
 				if newChannel.ChannelType() != "session" {
@@ -167,22 +172,26 @@ func main() {
 
 				term := terminal.NewTerminal(channel, `(ง˙o˙)ว ~> $ `)
 
-				go func() {
+				go func(listenChannel chan string) {
 					for {
-						fmt.Fprintln(term, <-player.listenChannel)
-						time.Sleep(time.Millisecond * 10)
+						msg, ok := <-listenChannel
+						if ok == false {
+							return
+						}
+						fmt.Fprintln(term, msg)
 					}
-				}()
+				}(players[player_id].listenChannel)
 
 				go func() {
 					defer channel.Close()
 
-
+					log.Println(nConn.RemoteAddr(), username, "connected")
 					msg := username + " enters the world of Maoxian...\n"
 					for _, p := range players {
-						p.listenChannel <- msg
+						if p.exists {
+							p.listenChannel <- msg
+						}
 					}
-					log.Println(nConn.RemoteAddr(), username, "connected")
 
 					for {
 						cmds := map[string]func([]string){
@@ -208,8 +217,8 @@ func main() {
 							"look": func(args []string) {
 								fmt.Fprintln(term, here.description)
 
-								for _, player_id := range here.players {
-									fmt.Fprintln(term, players[player_id].username, "is here.")
+								for _, id := range here.players {
+									fmt.Fprintln(term, players[id].username, "is here.")
 								}
 							},
 							"move": func(args []string) {
@@ -220,9 +229,9 @@ func main() {
 
 								to, exists := here.connections[direction(args[0])]
 								if exists {
-									here.removePlayer(player.id)
+									here.removePlayer(player_id)
 									here = world.rooms[to]
-									here.players = append(here.players, player.id)
+									here.players = append(here.players, player_id)
 									fmt.Fprintf(term, "Moved to %s.\r\n", here.name)
 								} else {
 									fmt.Fprintln(term, "Cannot move there.")
@@ -234,8 +243,6 @@ func main() {
 							},
 							"exit": func(args []string) {
 								fmt.Fprintln(term, "Leaving the land of Maoxian...\r\n")
-								here.removePlayer(player.id)
-								// TODO: remove player
 
 								channel.Close()
 							},
@@ -243,8 +250,15 @@ func main() {
 
 						line, err := term.ReadLine()
 						if err != nil {
-							here.removePlayer(player.id)
-							// TODO: remove player
+							log.Println(nConn.RemoteAddr(), username, "disconnected")
+							here.removePlayer(player_id)
+							players[player_id].remove()
+							msg := username + " leaves the world of Maoxian.\n"
+							for _, p := range players {
+								if p.exists {
+									p.listenChannel <- msg
+								}
+							}
 							break
 						}
 
