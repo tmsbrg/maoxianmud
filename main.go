@@ -16,11 +16,23 @@ import (
 type direction string
 
 const (
+	normal = "\x1b[0m"
+	bold = "\x1b[1m"
+)
+
+const (
 	north = "north"
 	east  = "east"
 	south = "south"
 	west  = "west"
 )
+
+func oppositeDirection(d direction) direction {
+	if d == north { return south }
+	if d == south { return north }
+	if d == east { return west }
+	return east
+}
 
 type roomType struct {
 	name        string
@@ -121,8 +133,78 @@ func main() {
 
 	players = make([]playerCharacter, 0)
 	world := newRoomCollection()
-	world.addRoom(&roomType{"cabin", "You are in a small cabin.", map[direction]string{east: "field"}, []int{}})
-	world.addRoom(&roomType{"field", "You are in a large field.", map[direction]string{west: "cabin"}, []int{}})
+	world.addRoom(&roomType{"castle courtyard", "You are in a courtyard surrounded by high walls.", map[direction]string{
+		north: "castle lobby",
+		east: "castle east wall",
+		south: "castle gate",
+		west: "castle west wall",
+	}, []int{}})
+	world.addRoom(&roomType{"castle east wall", "You are on the east wall of castle Cornelia.", map[direction]string{
+		south: "castle tower SE",
+		west: "castle courtyard",
+	}, []int{}})
+	world.addRoom(&roomType{"castle west wall", "You are on the west wall of castle Cornelia.", map[direction]string{
+		south: "castle tower SW",
+		east: "castle courtyard",
+	}, []int{}})
+	world.addRoom(&roomType{"castle tower SE", "You are on the southeast tower of castle Cornelia. The view over Cornelia town to the east is splendid.", map[direction]string{
+		north: "castle east wall",
+		west: "castle gate roof",
+	}, []int{}})
+	world.addRoom(&roomType{"castle tower SW", "You are on the southwest tower of castle Cornelia. The view shows a beautiful forest to the west.", map[direction]string{
+		north: "castle west wall",
+		east: "castle gate roof",
+	}, []int{}})
+	world.addRoom(&roomType{"castle gate roof", "You are on top of the tower gate.", map[direction]string{
+		east: "castle tower SE",
+		west: "castle tower SW",
+	}, []int{}})
+	world.addRoom(&roomType{"castle gate", "You are at the gate of castle cornelia. The gate is open.", map[direction]string{
+		north: "castle courtyard",
+		south: "castle road",
+	}, []int{}})
+	world.addRoom(&roomType{"castle road", "You are on the road to castle Cornelia. The road is surrounded by low bushes, but no trees or buildings.", map[direction]string{
+		north: "castle gate",
+		east: "castle bridge",
+	}, []int{}})
+	world.addRoom(&roomType{"castle bridge", "You are at the bridge between castle Cornelia and the town of Cornelia. The bridge is currently undergoing construction work, and not crossable.", map[direction]string{
+		west: "castle road",
+	}, []int{}})
+	world.addRoom(&roomType{"castle lobby", "You are in the castle lobby. There is a large staircase north and some side passenges to the side. The room look large and luxurious with red carpet and bright torches.", map[direction]string{
+		north: "castle courtroom",
+		east: "castle tower NE",
+		south: "castle courtyard",
+		west: "castle tower NW",
+	}, []int{}})
+	world.addRoom(&roomType{"castle courtroom", "You are in the court of castle Cornelia. There is a throne used by the king when making announcement.", map[direction]string{
+		north: "castle royal quarters",
+		east: "castle meeting room",
+		south: "castle lobby",
+		west: "castle knights quarters",
+	}, []int{}})
+	world.addRoom(&roomType{"castle tower NE", "You are on the northeast tower of castle Cornelia. You enjoy the fresh air and the view.", map[direction]string{
+		west: "castle lobby",
+	}, []int{}})
+	world.addRoom(&roomType{"castle tower NW", "You are on the northwest tower of castle Cornelia. This tower has the best view over the western forest. Nature is marvelous!", map[direction]string{
+		east: "castle lobby",
+	}, []int{}})
+	world.addRoom(&roomType{"castle meeting room", "You are a large meeting room. A massive table is at the center, surrounded by chairs. The room is surrounded by paintings of historic events. You guess 100 people could easily meet here.", map[direction]string{
+		west: "castle courtroom",
+	}, []int{}})
+	world.addRoom(&roomType{"castle knights quarters", "You are in the knights quarters. The elite knights stay here to protect to royal family.", map[direction]string{
+		east: "castle courtroom",
+	}, []int{}})
+	world.addRoom(&roomType{"castle royal quarters", "You are in the royal quarters. This room acts as the living room for the royal family. There is a fireplace, and beautiful expensive furniture. This place has a warm atmosphere.", map[direction]string{
+		north: "king quarters",
+		west: "princess quarters",
+		south: "castle courtroom",
+	}, []int{}})
+	world.addRoom(&roomType{"king quarters", "You are in the king's bedroom.", map[direction]string{
+		south: "castle royal quarters",
+	}, []int{}})
+	world.addRoom(&roomType{"princess quarters", "You are in the princess' bedroom.", map[direction]string{
+		east: "castle royal quarters",
+	}, []int{}})
 
 	// player connects
 
@@ -147,7 +229,7 @@ func main() {
 			username := connection.Permissions.Extensions["username"]
 			player_id := addPlayer(username)
 
-			here := world.rooms["cabin"]
+			here := world.rooms["castle courtyard"]
 			here.players = append(here.players, player_id)
 
 			for newChannel := range chans {
@@ -186,11 +268,17 @@ func main() {
 					defer channel.Close()
 
 					log.Println(nConn.RemoteAddr(), username, "connected")
+
+					fmt.Fprintf(term, "Welcome %s!\n\nYou have just entered the world of Maoxian, a textual adventure.\nType `help` (followed by enter) to see what basic commands you can perform.\n\n", username)
+
+					fmt.Fprintln(term, here.description)
+
 					msg := username + " enters the world of Maoxian...\n"
-					for _, p := range players {
-						if p.exists {
-							p.listenChannel <- msg
-						}
+					for _, id := range here.players {
+						if id == player_id { continue }
+						p := &players[id]
+						p.listenChannel <- msg
+						fmt.Fprintln(term, players[id].username, "is here.")
 					}
 
 					for {
@@ -202,8 +290,10 @@ func main() {
 								helpWriter := tabwriter.NewWriter(term, 8, 8, 0, '\t', 0)
 
 								commands := [][]string{
-									[]string{"look", "Show a description of the current room and its contents"},
-									[]string{"move [direction]", "Move to another room. Example: `move n` will go north."},
+									[]string{"look or l", "Show a description of the current room and its contents."},
+									[]string{"move [direction]", "Move to another room. Example: `move north` will go north."},
+									[]string{"[direction]", "Alias for `move [direction]`."},
+									[]string{"say [stuff...]", "Say something. People in the same room will be able to see your message."},
 									[]string{"exit", "leave the land of Maoxian and return to your boring terminal."},
 								}
 
@@ -212,10 +302,14 @@ func main() {
 								}
 								helpWriter.Flush()
 
-								fmt.Fprintln(term, "\npsst! try running 'look' to get started")
+								fmt.Fprintln(term, "\npsst! try running 'look' to get started. Remember to hit [Enter] after writing any command")
 							},
 							"look": func(args []string) {
 								fmt.Fprintln(term, here.description)
+								for d, to := range here.connections {
+									fmt.Fprintf(term, "%s%s%s => %s; ", bold, d, normal, to)
+								}
+								fmt.Fprintln(term, "")
 
 								for _, id := range here.players {
 									fmt.Fprintln(term, players[id].username, "is here.")
@@ -230,12 +324,33 @@ func main() {
 								to, exists := here.connections[direction(args[0])]
 								if exists {
 									here.removePlayer(player_id)
+									for _, id := range here.players {
+										if players[id].username != username {
+											players[id].listenChannel <- username + " went " + args[0]
+										}
+									}
 									here = world.rooms[to]
 									here.players = append(here.players, player_id)
 									fmt.Fprintf(term, "Moved to %s.\r\n", here.name)
+									for _, id := range here.players {
+										if players[id].username != username {
+											fmt.Fprintln(term, players[id].username, "is here.")
+											players[id].listenChannel <- username + " moves in from " + string(oppositeDirection(direction(args[0])))
+										}
+									}
 								} else {
 									fmt.Fprintln(term, "Cannot move there.")
 									return
+								}
+							},
+							"say": func(args []string) {
+								if len(args) == 0 {
+									fmt.Fprintln(term, "type: `say [stuff]` to say something. People in the same room will be able to see your message.")
+									return
+								}
+
+								for _, id := range here.players {
+									players[id].listenChannel <- username + " says \"" + strings.Join(args, " ") + "\"\n"
 								}
 							},
 							"whoami": func(args []string) {
@@ -247,18 +362,25 @@ func main() {
 								channel.Close()
 							},
 						}
+						// aliases
+						cmds["l"] = cmds["look"]
+						cmds["go"] = cmds["move"]
+						cmds["quit"] = cmds["exit"]
+						cmds["north"] = func(args []string) { cmds["move"]([]string{"north"}) }
+						cmds["east"] = func(args []string) { cmds["move"]([]string{"east"}) }
+						cmds["south"] = func(args []string) { cmds["move"]([]string{"south"}) }
+						cmds["west"] = func(args []string) { cmds["move"]([]string{"west"}) }
 
 						line, err := term.ReadLine()
 						if err != nil {
 							log.Println(nConn.RemoteAddr(), username, "disconnected")
+							msg := username + " leaves the world of Maoxian.\n"
+							for _, id := range here.players {
+								p := &players[id]
+								p.listenChannel <- msg
+							}
 							here.removePlayer(player_id)
 							players[player_id].remove()
-							msg := username + " leaves the world of Maoxian.\n"
-							for _, p := range players {
-								if p.exists {
-									p.listenChannel <- msg
-								}
-							}
 							break
 						}
 
