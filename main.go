@@ -13,6 +13,47 @@ import (
 	terminal "golang.org/x/term"
 )
 
+type direction string
+
+const (
+	north = "north"
+	east  = "east"
+	south = "south"
+	west  = "west"
+)
+
+type room struct {
+	name        string
+	description string
+	connections map[direction]string
+	things      []string
+}
+
+func (r *room) remove(thing string) {
+	r.things = removeFrom(r.things, thing)
+}
+
+type roomCollection struct {
+	rooms map[string]*room
+}
+
+func newRoomCollection() roomCollection {
+	return roomCollection{make(map[string]*room)}
+}
+
+func (w *roomCollection) addRoom(r *room) {
+	w.rooms[r.name] = r
+}
+
+func removeFrom(slice []string, item string) []string {
+	for i, it := range slice {
+		if it == item {
+			return append(slice[:i], slice[i+1:]...)
+		}
+	}
+	return slice
+}
+
 func main() {
 	// init SSH connection
 
@@ -27,7 +68,7 @@ func main() {
 
 	config := &ssh.ServerConfig{
 		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
-			return &ssh.Permissions{Extensions:map[string]string {"username":c.User()} }, nil
+			return &ssh.Permissions{Extensions: map[string]string{"username": c.User()}}, nil
 		},
 	}
 
@@ -58,6 +99,9 @@ func main() {
 	// init game
 
 	users := []string{}
+	world := newRoomCollection()
+	world.addRoom(&room{"cabin", "You are in a small cabin.", map[direction]string{east: "field"}, []string{}})
+	world.addRoom(&room{"field", "You are in a large field.", map[direction]string{west: "cabin"}, []string{}})
 
 	// player connects
 
@@ -81,6 +125,9 @@ func main() {
 
 			username := connection.Permissions.Extensions["username"]
 			users = append(users, username)
+
+			here := world.rooms["cabin"]
+			here.things = append(here.things, username)
 
 			for newChannel := range chans {
 				if newChannel.ChannelType() != "session" {
@@ -132,10 +179,27 @@ func main() {
 								fmt.Fprintln(term, "\npsst! try running 'look' to get started")
 							},
 							"look": func(args []string) {
-								fmt.Fprintln(term, "You are in a non-descript room.\n")
+								fmt.Fprintln(term, here.description)
 
-								for _, user := range users {
-									fmt.Fprintln(term, user, "is here.")
+								for _, thing := range here.things {
+									fmt.Fprintln(term, thing, "is here.")
+								}
+							},
+							"move": func(args []string) {
+								if len(args) == 0 {
+									fmt.Fprintln(term, "type: `move [direction]` to move somewhere. Example: move east.")
+									return
+								}
+
+								to, exists := here.connections[direction(args[0])]
+								if exists {
+									here.remove(username)
+									here = world.rooms[to]
+									here.things = append(here.things, username)
+									fmt.Fprintf(term, "Moved to %s.\r\n", here.name)
+								} else {
+									fmt.Fprintln(term, "Cannot move there.")
+									return
 								}
 							},
 							"whoami": func(args []string) {
@@ -143,6 +207,8 @@ func main() {
 							},
 							"exit": func(args []string) {
 								fmt.Fprintln(term, "Leaving the land of Maoxian...\r\n")
+								here.remove(username)
+								users = removeFrom(users, username)
 
 								channel.Close()
 							},
@@ -150,6 +216,8 @@ func main() {
 
 						line, err := term.ReadLine()
 						if err != nil {
+							here.remove(username)
+							users = removeFrom(users, username)
 							break
 						}
 
