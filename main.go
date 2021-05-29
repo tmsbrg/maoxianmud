@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 	"text/tabwriter"
 
 	"golang.org/x/crypto/ssh"
@@ -22,30 +23,45 @@ const (
 	west  = "west"
 )
 
-type room struct {
+type roomType struct {
 	name        string
 	description string
 	connections map[direction]string
-	things      []string
+	players      []int
 }
 
-func (r *room) remove(thing string) {
-	r.things = removeFrom(r.things, thing)
+func (r *roomType) removePlayer(player int) {
+	r.players = removeFrom(r.players, player)
 }
 
 type roomCollection struct {
-	rooms map[string]*room
+	rooms map[string]*roomType
 }
 
 func newRoomCollection() roomCollection {
-	return roomCollection{make(map[string]*room)}
+	return roomCollection{make(map[string]*roomType)}
 }
 
-func (w *roomCollection) addRoom(r *room) {
+func (w *roomCollection) addRoom(r *roomType) {
 	w.rooms[r.name] = r
 }
 
-func removeFrom(slice []string, item string) []string {
+type playerCharacter struct {
+	id int
+	username string
+	listenChannel chan string
+}
+
+var players []playerCharacter
+
+func addPlayer(name string) *playerCharacter {
+	channel := make(chan string, 100)
+	player := playerCharacter{len(players), name, channel}
+	players = append(players, player)
+	return &player
+}
+
+func removeFrom(slice []int, item int) []int {
 	for i, it := range slice {
 		if it == item {
 			return append(slice[:i], slice[i+1:]...)
@@ -98,10 +114,10 @@ func main() {
 
 	// init game
 
-	users := []string{}
+	players = make([]playerCharacter, 0)
 	world := newRoomCollection()
-	world.addRoom(&room{"cabin", "You are in a small cabin.", map[direction]string{east: "field"}, []string{}})
-	world.addRoom(&room{"field", "You are in a large field.", map[direction]string{west: "cabin"}, []string{}})
+	world.addRoom(&roomType{"cabin", "You are in a small cabin.", map[direction]string{east: "field"}, []int{}})
+	world.addRoom(&roomType{"field", "You are in a large field.", map[direction]string{west: "cabin"}, []int{}})
 
 	// player connects
 
@@ -124,10 +140,10 @@ func main() {
 			go ssh.DiscardRequests(reqs)
 
 			username := connection.Permissions.Extensions["username"]
-			users = append(users, username)
+			player := addPlayer(username)
 
 			here := world.rooms["cabin"]
-			here.things = append(here.things, username)
+			here.players = append(here.players, player.id)
 
 			for newChannel := range chans {
 				if newChannel.ChannelType() != "session" {
@@ -149,12 +165,23 @@ func main() {
 					}
 				}(requests)
 
+				term := terminal.NewTerminal(channel, `(ง˙o˙)ว ~> $ `)
+
+				go func() {
+					for {
+						fmt.Fprintln(term, <-player.listenChannel)
+						time.Sleep(time.Millisecond * 10)
+					}
+				}()
+
 				go func() {
 					defer channel.Close()
 
-					term := terminal.NewTerminal(channel, `(ง˙o˙)ว ~> $ `)
 
-					fmt.Fprintln(term, username, "enters the world of Maoxian...\n")
+					msg := username + " enters the world of Maoxian...\n"
+					for _, p := range players {
+						p.listenChannel <- msg
+					}
 					log.Println(nConn.RemoteAddr(), username, "connected")
 
 					for {
@@ -181,8 +208,8 @@ func main() {
 							"look": func(args []string) {
 								fmt.Fprintln(term, here.description)
 
-								for _, thing := range here.things {
-									fmt.Fprintln(term, thing, "is here.")
+								for _, player_id := range here.players {
+									fmt.Fprintln(term, players[player_id].username, "is here.")
 								}
 							},
 							"move": func(args []string) {
@@ -193,9 +220,9 @@ func main() {
 
 								to, exists := here.connections[direction(args[0])]
 								if exists {
-									here.remove(username)
+									here.removePlayer(player.id)
 									here = world.rooms[to]
-									here.things = append(here.things, username)
+									here.players = append(here.players, player.id)
 									fmt.Fprintf(term, "Moved to %s.\r\n", here.name)
 								} else {
 									fmt.Fprintln(term, "Cannot move there.")
@@ -207,8 +234,8 @@ func main() {
 							},
 							"exit": func(args []string) {
 								fmt.Fprintln(term, "Leaving the land of Maoxian...\r\n")
-								here.remove(username)
-								users = removeFrom(users, username)
+								here.removePlayer(player.id)
+								// TODO: remove player
 
 								channel.Close()
 							},
@@ -216,8 +243,8 @@ func main() {
 
 						line, err := term.ReadLine()
 						if err != nil {
-							here.remove(username)
-							users = removeFrom(users, username)
+							here.removePlayer(player.id)
+							// TODO: remove player
 							break
 						}
 
