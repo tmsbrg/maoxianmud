@@ -13,18 +13,21 @@ import (
 	terminal "golang.org/x/term"
 )
 
-type direction string
-
 const (
 	normal = "\x1b[0m"
 	bold   = "\x1b[1m"
 )
+
+type direction string
 
 const (
 	north = "north"
 	east  = "east"
 	south = "south"
 	west  = "west"
+	up = "up"
+	down = "down"
+	none = "none"
 )
 
 func oppositeDirection(d direction) direction {
@@ -37,14 +40,23 @@ func oppositeDirection(d direction) direction {
 	if d == east {
 		return west
 	}
-	return east
+	if d == west {
+		return east
+	}
+	if d == up {
+		return down
+	}
+	if d == down {
+		return up
+	}
+	return none
 }
 
 type roomType struct {
 	name        string
 	description string
 	connections map[direction]string
-	objects     []string
+	entities     []string
 	players     []int
 }
 
@@ -68,7 +80,7 @@ type playerCharacter struct {
 	id            int
 	exists        bool
 	username      string
-	grabbedObject string
+	grabbedEntity string
 	listenChannel chan string
 }
 
@@ -95,15 +107,15 @@ func removeFrom(slice []int, item int) []int {
 	return slice
 }
 
-type objectType struct {
+type entityType struct {
 	name      string
 	canPickup bool
 }
 
-var objects map[string]objectType
+var entities map[string]entityType
 
-func addObject(name string, canPickup bool) {
-	objects[name] = objectType{name, canPickup}
+func addEntity(name string, canPickup bool) {
+	entities[name] = entityType{name, canPickup}
 }
 
 func main() {
@@ -151,11 +163,26 @@ func main() {
 	// init game
 
 	players = make([]playerCharacter, 0)
-	objects = make(map[string]objectType, 0)
-	addObject("apple", true)
-	addObject("banana", true)
-	addObject("lever", false)
+	entities = make(map[string]entityType, 0)
+	addEntity("apple", true)
+	addEntity("banana", true)
+	addEntity("lever", false)
+	addEntity("holy well", false)
 	world := newRoomCollection()
+	world.addRoom(&roomType{"square", "You are in a large city square, surrounded by buildings.", map[direction]string{
+		//north: "residences",
+		east:  "temple",
+		//south: "market",
+		//west:  "west street",
+		down: "sewer entrance",
+	}, []string{}, []int{}})
+	world.addRoom(&roomType{"temple", "You are in a holy temple. The building is richly decorated with statues of ancient deities.", map[direction]string{
+		west: "square",
+	}, []string{"monk", "holy well"}, []int{}})
+	world.addRoom(&roomType{"sewer entrance", "You are in a large sewer underneath the market square", map[direction]string{
+		up: "square",
+	}, []string{"rat"}, []int{}})
+	/* castle
 	world.addRoom(&roomType{"castle courtyard", "You are in a courtyard surrounded by high walls.", map[direction]string{
 		north: "castle lobby",
 		east:  "castle east wall",
@@ -228,6 +255,7 @@ func main() {
 	world.addRoom(&roomType{"princess quarters", "You are in the princess' bedroom.", map[direction]string{
 		east: "castle royal quarters",
 	}, []string{}, []int{}})
+	*/
 
 	// player connects
 
@@ -254,7 +282,7 @@ func main() {
 			username := connection.Permissions.Extensions["username"]
 			player_id := addPlayer(username)
 
-			here := world.rooms["castle courtyard"]
+			here := world.rooms["temple"]
 			here.players = append(here.players, player_id)
 
 			for newChannel := range chans {
@@ -298,7 +326,7 @@ func main() {
 
 					log.Println(nConn.RemoteAddr(), username, "connected")
 
-					fmt.Fprintf(term, "Welcome %s!\n\nYou have just entered the world of Maoxian, a textual adventure.\nType `help` (followed by enter) to see what basic commands you can perform.\n\n", username)
+					fmt.Fprintf(term, "Welcome %s!\n\nYou have just entered the world of Maoxian, a multiplayer text adventure.\nType `help` (followed by enter) to see what basic commands you can perform.\n\n", username)
 
 					fmt.Fprintln(term, here.description)
 
@@ -336,12 +364,12 @@ func main() {
 								fmt.Fprintln(term, "\npsst! try running 'look' to get started. Remember to hit [Enter] after writing any command")
 							},
 							"drop": func(args []string) {
-								if players[player_id].grabbedObject != "" {
-									obj := players[player_id].grabbedObject
-									players[player_id].grabbedObject = ""
-									here.objects = append(here.objects, obj)
+								if players[player_id].grabbedEntity != "" {
+									ent := players[player_id].grabbedEntity
+									players[player_id].grabbedEntity = ""
+									here.entities = append(here.entities, ent)
 									for _, id := range here.players {
-										players[id].listenChannel <- username + " drops " + obj + ".\n"
+										players[id].listenChannel <- username + " drops " + ent + ".\n"
 									}
 								} else {
 									fmt.Fprintln(term, "You're not carrying anything!")
@@ -353,14 +381,14 @@ func main() {
 									fmt.Fprintf(term, "%s%s%s => %s; ", bold, d, normal, to)
 								}
 								fmt.Fprintln(term, "")
-								if len(here.objects) != 0 {
-									fmt.Fprintf(term, "objects: %s\n", strings.Join(here.objects, ", "))
+								if len(here.entities) != 0 {
+									fmt.Fprintf(term, "You can see: %s\n", strings.Join(here.entities, ", "))
 								}
 
 								for _, id := range here.players {
 									fmt.Fprint(term, players[id].username, " is here")
-									if players[id].grabbedObject != "" {
-										fmt.Fprint(term, ", carrying ", players[id].grabbedObject)
+									if players[id].grabbedEntity != "" {
+										fmt.Fprint(term, ", carrying ", players[id].grabbedEntity)
 									}
 									fmt.Fprintln(term, ".")
 								}
@@ -408,21 +436,21 @@ func main() {
 									fmt.Fprintln(term, "type: `take [thing]` to take something in this room.")
 									return
 								}
-								obj := strings.Join(args, " ")
-								for i, it := range here.objects {
-									if it == obj {
-										if objects[obj].canPickup {
-											oldobj := players[player_id].grabbedObject
-											if oldobj != "" {
-												here.objects = append(here.objects, oldobj)
+								ent := strings.Join(args, " ")
+								for i, it := range here.entities {
+									if it == ent {
+										if entities[ent].canPickup {
+											oldent := players[player_id].grabbedEntity
+											if oldent != "" {
+												here.entities = append(here.entities, oldent)
 												for _, id := range here.players {
-													players[id].listenChannel <- username + " drops " + oldobj + ".\n"
+													players[id].listenChannel <- username + " drops " + oldent + ".\n"
 												}
 											}
-											here.objects = append(here.objects[:i], here.objects[i+1:]...)
-											players[player_id].grabbedObject = obj
+											here.entities = append(here.entities[:i], here.entities[i+1:]...)
+											players[player_id].grabbedEntity = ent
 											for _, id := range here.players {
-												players[id].listenChannel <- username + " picks up " + obj + ".\n"
+												players[id].listenChannel <- username + " picks up " + ent + ".\n"
 											}
 											return
 										} else {
