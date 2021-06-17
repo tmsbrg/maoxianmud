@@ -93,6 +93,16 @@ var players []playerCharacter
 
 func addPlayer(name string) int {
 	channel := make(chan string, 100)
+	for id, _ := range players {
+		p := &(players[id])
+		if (!p.exists) {
+			p.username = name
+			p.grabbedEntity = ""
+			p.listenChannel = channel
+			p.exists = true
+			return p.id
+		}
+	}
 	id := len(players)
 	players = append(players, playerCharacter{id, true, name, "", channel})
 	return id
@@ -484,12 +494,12 @@ func main() {
 						if err != nil {
 							log.Println(nConn.RemoteAddr(), username, "disconnected")
 							msg := username + " leaves the world of Maoxian.\n"
+							here.removePlayer(player_id)
+							players[player_id].remove()
 							for _, id := range here.players {
 								p := &players[id]
 								p.listenChannel <- msg
 							}
-							here.removePlayer(player_id)
-							players[player_id].remove()
 							break
 						}
 
