@@ -77,6 +77,28 @@ func (r *roomType) removePlayer(player *playerCharacter) {
 	}
 }
 
+func (r *roomType) messagePlayers(s string) {
+	for _, p := range r.players {
+		p.message(s)
+	}
+}
+
+func (r *roomType) viewPlayers(player *playerCharacter) {
+	for _, p := range r.players {
+		if p != player {
+			fmt.Fprintln(player.term, p.username, "is here.")
+		}
+	}
+}
+
+func (r *roomType) messagePlayersExcept(exceptPlayer *playerCharacter, s string) {
+	for _, p := range r.players {
+		if p != exceptPlayer {
+			p.message(s)
+		}
+	}
+}
+
 type roomCollection struct {
 	rooms map[string]*roomType
 }
@@ -93,17 +115,20 @@ type playerCharacter struct {
 	username      string
 	location      *roomType
 	grabbedEntity *entityType
-	listenChannel chan string
 	ipAddr        string
+	term          *terminal.Terminal
+}
+
+func (p *playerCharacter) message(s string) {
+	fmt.Fprintln(p.term, s)
 }
 
 func (p *playerCharacter) log(s string) {
 	log.Println(p.ipAddr, p.username, s)
 }
 
-func newPlayer(name string, location *roomType, ipAddr string) *playerCharacter {
-	channel := make(chan string, 100)
-	player := &playerCharacter{name, location, nil, channel, ipAddr}
+func newPlayer(name string, location *roomType, ipAddr string, term *terminal.Terminal) *playerCharacter {
+	player := &playerCharacter{name, location, nil, ipAddr, term}
 	location.players = append(location.players, player)
 	return player
 }
@@ -119,6 +144,7 @@ type entityType struct {
 	_name      string
 	color     string
 	canPickup bool
+	canDestroy bool
 }
 
 func (e *entityType) name() string {
@@ -129,9 +155,30 @@ func (e *entityType) showname() string {
 	return e.color + e._name + normal
 }
 
-func (e *entityType) pickup(player playerCharacter) {
+func (e *entityType) pickup(player *playerCharacter, i int) {
+	if e.canPickup {
+		oldent := player.grabbedEntity
+		if oldent != nil {
+			player.location.entities = append(player.location.entities, oldent)
+			player.location.messagePlayers(player.username + " drops " + oldent.name() + ".\n")
+		}
+		player.location.entities = append(player.location.entities[:i], player.location.entities[i+1:]...)
+		player.grabbedEntity = e
+		player.location.messagePlayers(player.username + " picks up " + e.name() + ".\n")
+		return
+	} else {
+		player.message("Can't pick that up.")
+		return
+	}
 }
 
+func (e *entityType) attack(player playerCharacter, weapon weaponType, strength int) {
+	if e.canDestroy {
+		player.message("You destroyed the " + e.name() + ".")
+	} else {
+		player.message("Can't attack that.")
+	}
+}
 
 func main() {
 	// init SSH connection
@@ -182,16 +229,13 @@ func main() {
 		east:  "temple",
 		west:  "inn",
 		down: "under the square",
-	}, []*entityType{&entityType{_name:"merchant"}}, []*playerCharacter{}})
+	}, []*entityType{&entityType{_name:"merchant"}, &entityType{_name:"apple", canPickup:true, canDestroy:true}, &entityType{_name:"banana", canPickup:true}}, []*playerCharacter{}})
 	world.addRoom(&roomType{"temple", "You are in a holy temple. The building is richly decorated with statues of ancient deities.", map[direction]string{
 		west: "square",
-	}, []*entityType{&entityType{_name:"monk"}}, []*playerCharacter{}})
+	}, []*entityType{&entityType{_name:"priest"}}, []*playerCharacter{}})
 	world.addRoom(&roomType{"inn", "You are in a lively inn.", map[direction]string{
 		east: "square",
 	}, []*entityType{&entityType{_name:"traveler"},&entityType{_name:"job board"}}, []*playerCharacter{}})
-	world.addRoom(&roomType{"under the square", "You are in a large sewer underneath the market square", map[direction]string{
-		up: "square",
-	}, []*entityType{&entityType{_name:"rat",color:red}}, []*playerCharacter{}})
 	world.addRoom(&roomType{"under the square", "You are in a large sewer underneath the market square", map[direction]string{
 		up: "square",
 	}, []*entityType{&entityType{_name:"rat",color:red}}, []*playerCharacter{}})
@@ -216,11 +260,6 @@ func main() {
 			// for the connection. receive and discard all of those.
 			go ssh.DiscardRequests(reqs)
 
-			// init player info
-
-			username := connection.Permissions.Extensions["username"]
-			player := newPlayer(username, world.rooms["temple"], nConn.RemoteAddr().String())
-
 			for newChannel := range chans {
 				if newChannel.ChannelType() != "session" {
 					newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
@@ -243,17 +282,10 @@ func main() {
 
 				term := terminal.NewTerminal(channel, `(ง˙o˙)ว ~> $ `)
 
-				// goroutine for printing events (other players actions, etc.)
+				// init player info
+				username := connection.Permissions.Extensions["username"]
+				player := newPlayer(username, world.rooms["temple"], nConn.RemoteAddr().String(), term)
 
-				go func(listenChannel chan string) {
-					for {
-						msg, ok := <-listenChannel
-						if ok == false {
-							return
-						}
-						fmt.Fprintln(term, msg)
-					}
-				}(player.listenChannel)
 
 				// goroutine for user input
 
@@ -266,14 +298,8 @@ func main() {
 
 					fmt.Fprintln(term, player.location.description)
 
-					msg := username + " enters the world of Maoxian...\n"
-					for _, p := range player.location.players {
-						if p == player {
-							continue
-						}
-						p.listenChannel <- msg
-						fmt.Fprintln(term, p.username, "is here.")
-					}
+					player.location.messagePlayers(username + " enters the world of Maoxian...\n")
+					player.location.viewPlayers(player)
 
 					for {
 						cmds := map[string]func([]string){
@@ -303,9 +329,7 @@ func main() {
 									ent := player.grabbedEntity
 									player.grabbedEntity = nil
 									player.location.entities = append(player.location.entities, ent)
-									for _, p := range player.location.players {
-										p.listenChannel <- username + " drops " + ent.name() + ".\n"
-									}
+									player.location.messagePlayers(username + " drops " + ent.name() + ".\n")
 								} else {
 									fmt.Fprintln(term, "You're not carrying anything!")
 								}
@@ -342,11 +366,7 @@ func main() {
 								to, exists := player.location.connections[direction(args[0])]
 								if exists {
 									player.location.removePlayer(player)
-									for _, p := range player.location.players {
-										if p.username != username {
-											p.listenChannel <- username + " went " + args[0]
-										}
-									}
+									player.location.messagePlayersExcept(player, username + " went " + args[0])
 									player.location = world.rooms[to]
 									player.location.players = append(player.location.players, player)
 									fmt.Fprintf(term, "Moved to %s.\r\n", player.location.name)
@@ -357,12 +377,8 @@ func main() {
 										}
 										fmt.Fprintln(term, str)
 									}
-									for _, p := range player.location.players {
-										if p.username != username {
-											fmt.Fprintln(term, p.username, "is here.")
-											p.listenChannel <- username + " moves in from " + string(oppositeDirection(direction(args[0])))
-										}
-									}
+									player.location.messagePlayersExcept(player, username + " moves in from " + string(oppositeDirection(direction(args[0]))))
+									player.location.viewPlayers(player)
 								} else {
 									fmt.Fprintln(term, "Cannot move there.")
 									return
@@ -374,9 +390,7 @@ func main() {
 									return
 								}
 
-								for _, p := range player.location.players {
-									p.listenChannel <- username + " says \"" + strings.Join(args, " ") + "\"\n"
-								}
+								player.location.messagePlayers(username + " says \"" + strings.Join(args, " ") + "\"\n")
 							},
 							"take": func(args []string) {
 								if len(args) == 0 {
@@ -386,27 +400,11 @@ func main() {
 								ent := strings.Join(args, " ")
 								for i, it := range player.location.entities {
 									if it.name() == ent {
-										if it.canPickup {
-											oldent := player.grabbedEntity
-											if oldent != nil {
-												player.location.entities = append(player.location.entities, oldent)
-												for _, p := range player.location.players {
-													p.listenChannel <- username + " drops " + oldent.name() + ".\n"
-												}
-											}
-											player.location.entities = append(player.location.entities[:i], player.location.entities[i+1:]...)
-											player.grabbedEntity = it
-											for _, p := range player.location.players {
-												p.listenChannel <- username + " picks up " + it.name() + ".\n"
-											}
-											return
-										} else {
-											fmt.Fprintln(term, "Can't pick that up.")
-											return
-										}
+										it.pickup(player, i)
+										return
 									}
 								}
-								fmt.Fprintln(term, "That object isn't player.location.")
+								fmt.Fprintln(term, "That object isn't here.")
 							},
 							"whoami": func(args []string) {
 								fmt.Fprintln(term, "You are", username)
@@ -434,10 +432,7 @@ func main() {
 							player.log("disconnected")
 							msg := username + " leaves the world of Maoxian.\n"
 							player.location.removePlayer(player)
-							for _, p := range player.location.players {
-								p.listenChannel <- msg
-							}
-							close(player.listenChannel)
+							player.location.messagePlayers(msg)
 							break
 						}
 
