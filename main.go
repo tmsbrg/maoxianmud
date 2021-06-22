@@ -64,7 +64,7 @@ type roomType struct {
 	name        string
 	description string
 	connections map[direction]string
-	entities     []*entityType
+	entities     []ientity
 	players     []*playerCharacter
 }
 
@@ -114,7 +114,7 @@ func (w *roomCollection) addRoom(r *roomType) {
 type playerCharacter struct {
 	username      string
 	location      *roomType
-	grabbedEntity *entityType
+	grabbedEntity ientity
 	ipAddr        string
 	term          *terminal.Terminal
 }
@@ -136,8 +136,8 @@ func newPlayer(name string, location *roomType, ipAddr string, term *terminal.Te
 type ientity interface {
 	name() string
 	showname() string
-	pickup(player playerCharacter)
-	attack(player playerCharacter, weapon weaponType, strength int)
+	pickup(player *playerCharacter, i int)
+	attack(player *playerCharacter, weapon weaponType, strength int, i int)
 }
 
 type entityType struct {
@@ -172,9 +172,10 @@ func (e *entityType) pickup(player *playerCharacter, i int) {
 	}
 }
 
-func (e *entityType) attack(player playerCharacter, weapon weaponType, strength int) {
+func (e *entityType) attack(player *playerCharacter, weapon weaponType, strength int, i int) {
 	if e.canDestroy {
 		player.message("You destroyed the " + e.name() + ".")
+		player.location.entities = append(player.location.entities[:i], player.location.entities[i+1:]...)
 	} else {
 		player.message("Can't attack that.")
 	}
@@ -229,16 +230,16 @@ func main() {
 		east:  "temple",
 		west:  "inn",
 		down: "under the square",
-	}, []*entityType{&entityType{_name:"merchant"}, &entityType{_name:"apple", canPickup:true, canDestroy:true}, &entityType{_name:"banana", canPickup:true}}, []*playerCharacter{}})
+	}, []ientity{&entityType{_name:"merchant"}, &entityType{_name:"apple", canPickup:true, canDestroy:true}, &entityType{_name:"banana", canPickup:true, canDestroy:true}}, []*playerCharacter{}})
 	world.addRoom(&roomType{"temple", "You are in a holy temple. The building is richly decorated with statues of ancient deities.", map[direction]string{
 		west: "square",
-	}, []*entityType{&entityType{_name:"priest"}}, []*playerCharacter{}})
+	}, []ientity{&entityType{_name:"priest"}}, []*playerCharacter{}})
 	world.addRoom(&roomType{"inn", "You are in a lively inn.", map[direction]string{
 		east: "square",
-	}, []*entityType{&entityType{_name:"traveler"},&entityType{_name:"job board"}}, []*playerCharacter{}})
+	}, []ientity{&entityType{_name:"traveler"},&entityType{_name:"job board"}}, []*playerCharacter{}})
 	world.addRoom(&roomType{"under the square", "You are in a large sewer underneath the market square", map[direction]string{
 		up: "square",
-	}, []*entityType{&entityType{_name:"rat",color:red}}, []*playerCharacter{}})
+	}, []ientity{&entityType{_name:"rat",color:red}}, []*playerCharacter{}})
 
 	// player connects
 
@@ -405,6 +406,20 @@ func main() {
 									}
 								}
 								fmt.Fprintln(term, "That object isn't here.")
+							},
+							"punch": func(args []string) {
+								if len(args) == 0 {
+									fmt.Fprintln(term, "type: `punch [thing]` to attack something in this room with your fists.")
+									return
+								}
+								ent := strings.Join(args, " ")
+								for i, it := range player.location.entities {
+									if it.name() == ent {
+										it.attack(player, fists, 0, i)
+										return
+									}
+								}
+								fmt.Fprintln(term, "That object isn't in this location.")
 							},
 							"whoami": func(args []string) {
 								fmt.Fprintln(term, "You are", username)
